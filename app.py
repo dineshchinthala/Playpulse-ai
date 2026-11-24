@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import json
+import time
 from typing import Literal
 from pydantic import BaseModel
 from google import genai
@@ -11,8 +12,8 @@ st.set_page_config(page_title="PlayPulse AI | Telemetry Radar", layout="wide")
 st.title("PlayPulse AI: Autonomous App Review & Safety Radar")
 st.caption("Transforming unstructured Play Store telemetry into prioritized product backlogs.")
 
-# Structured output schema for deterministic classification
 class ReviewAudit(BaseModel):
+    Review_ID: str
     category: Literal[
         "Critical Security/Auth",
         "Data Privacy",
@@ -22,7 +23,6 @@ class ReviewAudit(BaseModel):
     severity: Literal["P0", "P1", "P2"]
     root_cause: str
 
-# Load API key from Streamlit Cloud Secrets or sidebar fallback
 api_key = ""
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
@@ -33,6 +33,12 @@ model_choice = st.sidebar.selectbox(
     "Select Gemini Model",
     ["gemini-3.5-flash-lite", "gemini-3.8-flash"],
     index=0,
+)
+
+max_reviews = st.sidebar.select_slider(
+    "Max Reviews per Run (Latency & Quota Guardrail)",
+    options=[15, 25, 50, 100, 250, 500],
+    value=50,
 )
 
 default_data = pd.DataFrame({
@@ -62,40 +68,92 @@ else:
     df = default_data
 
 st.subheader("1. Raw User Telemetry")
-st.dataframe(df, width="stretch")
+if len(df) > max_reviews:
+    st.info(
+        f"Uploaded {len(df)} reviews. Auditing the first {max_reviews} reviews to keep demo latency low "
+        "(increase the limit up to 500 in the left sidebar)."
+    )
+audit_df = df.head(max_reviews).copy()
+st.dataframe(audit_df, width="stretch")
 
 if st.button("Run AI Triage & Safety Audit"):
     if not api_key:
         st.error("Please configure GEMINI_API_KEY in Secrets or enter it in the sidebar.")
     else:
-        try:
-            client = genai.Client(api_key=api_key)
-            results = []
-            with st.spinner(f"Auditing telemetry streams with {model_choice}..."):
-                for _, row in df.iterrows():
-                    prompt = (
-                        "Analyze this mobile app review and classify its category, "
-                        "engineering severity (P0=critical security/payment/auth, "
-                        "P1=major bug/privacy, P2=minor bug/feature), and 1-sentence root cause.\n\n"
-                        f"Review: \"{row['User_Review']}\""
-                    )
+        client = genai.Client(api_key=api_key)
+        results = []
+        batch_size = 25
+        total_rows = len(audit_df)
+        progress_bar = st.progress(0, text="Starting batch telemetry audit...")
+        quota_notice = None
+
+        for start_idx in range(0, total_rows, batch_size):
+            batch = audit_df.iloc[start_idx : start_idx + batch_size]
+            payload = [
+                {
+                    "Review_ID": str(r["Review_ID"]),
+                    "User_Review": str(r["User_Review"])[:500],
+                }
+                for _, r in batch.iterrows()
+            ]
+            prompt = (
+                "Analyze each mobile app review in the JSON list below. For every item, return its exact "
+                "Review_ID, category, engineering severity (P0=critical security/payment/auth, "
+                "P1=major bug/privacy, P2=minor bug/feature), and a 1-sentence root_cause.\n\n"
+                f"Reviews:\n{json.dumps(payload)}"
+            )
+
+            batch_parsed = None
+            for attempt in range(2):
+                try:
                     response = client.models.generate_content(
                         model=model_choice,
                         contents=prompt,
                         config=types.GenerateContentConfig(
                             response_mime_type="application/json",
-                            response_schema=ReviewAudit,
+                            response_schema=list[ReviewAudit],
                             temperature=0.0,
                         ),
                     )
-                    parsed = json.loads(response.text)
-                    parsed["Review_ID"] = row["Review_ID"]
-                    results.append(parsed)
-            st.session_state["results"] = pd.DataFrame(results)[
-                ["Review_ID", "category", "severity", "root_cause"]
-            ]
-        except Exception as e:
-            st.error(f"Audit failed: {e}")
+                    batch_parsed = json.loads(response.text)
+                    break
+                except Exception as e:
+                    if "429" in str(e) and attempt == 0:
+                        progress_bar.progress(
+                            min(start_idx / total_rows, 0.99),
+                            text="Rate limit pause — retrying batch in 15 seconds...",
+                        )
+                        time.sleep(15)
+                    else:
+                        quota_notice = (
+                            f"Stopped after {len(results)}/{total_rows} reviews due to API limit ({e}). "
+                            "Showing completed results below."
+                        )
+                        break
+
+            if batch_parsed is None:
+                break
+
+            results.extend(batch_parsed)
+            processed_so_far = min(start_idx + batch_size, total_rows)
+            progress_bar.progress(
+                processed_so_far / total_rows,
+                text=f"Audited {processed_so_far} of {total_rows} reviews...",
+            )
+
+            if processed_so_far < total_rows:
+                time.sleep(4)
+
+        progress_bar.empty()
+        if quota_notice:
+            st.warning(quota_notice)
+
+        if results:
+            res_df = pd.DataFrame(results)
+            cols = [c for c in ["Review_ID", "category", "severity", "root_cause"] if c in res_df.columns]
+            st.session_state["results"] = res_df[cols]
+        else:
+            st.error("Could not process reviews right now. Please check your API key or quota.")
 
 if "results" in st.session_state:
     res_df = st.session_state["results"]
@@ -116,9 +174,13 @@ if "results" in st.session_state:
         else:
             try:
                 client = genai.Client(api_key=api_key)
+                priority_sample = res_df[res_df["severity"].isin(["P0", "P1"])].head(25)
+                if priority_sample.empty:
+                    priority_sample = res_df.head(25)
+
                 prd_prompt = f"""
-                Act as a Senior Product Manager. Based on these triaged app reviews:
-                {res_df.to_dict(orient='records')}
+                Act as a Senior Product Manager. Based on these triaged app reviews (out of {len(res_df)} total audited):
+                {priority_sample.to_dict(orient='records')}
 
                 Write a concise 1-page Product Requirement Document (PRD) addressing the highest-priority user pain point.
                 Include:
