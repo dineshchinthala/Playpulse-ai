@@ -165,7 +165,7 @@ if "results" in st.session_state:
     c3.metric("Feature Requests", int((res_df["category"] == "Feature Request").sum()))
 
     st.dataframe(res_df, width="stretch")
-        st.divider()
+    st.divider()
     st.subheader("3. Autonomous PRD Micro-Spec")
     if st.button("Generate Feature PRD from Top Backlog"):
         if not api_key:
