@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import json
@@ -30,6 +29,12 @@ try:
 except Exception:
     api_key = st.sidebar.text_input("Enter Gemini API Key", type="password")
 
+model_choice = st.sidebar.selectbox(
+    "Select Gemini Model",
+    ["gemini-3.5-flash-lite", "gemini-3.8-flash"],
+    index=0,
+)
+
 default_data = pd.DataFrame({
     "Review_ID": ["REV-101", "REV-102", "REV-103", "REV-104", "REV-105"],
     "User_Review": [
@@ -44,7 +49,6 @@ default_data = pd.DataFrame({
 uploaded_file = st.sidebar.file_uploader("Upload App Reviews (CSV)", type=["csv"])
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
-    # Normalize columns safely if a custom CSV is uploaded
     if "User_Review" not in df.columns:
         text_cols = df.select_dtypes(include="object").columns
         if len(text_cols) > 0:
@@ -67,7 +71,7 @@ if st.button("Run AI Triage & Safety Audit"):
         try:
             client = genai.Client(api_key=api_key)
             results = []
-            with st.spinner("Auditing telemetry streams..."):
+            with st.spinner(f"Auditing telemetry streams with {model_choice}..."):
                 for _, row in df.iterrows():
                     prompt = (
                         "Analyze this mobile app review and classify its category, "
@@ -76,7 +80,7 @@ if st.button("Run AI Triage & Safety Audit"):
                         f"Review: \"{row['User_Review']}\""
                     )
                     response = client.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model=model_choice,
                         contents=prompt,
                         config=types.GenerateContentConfig(
                             response_mime_type="application/json",
@@ -125,11 +129,11 @@ if "results" in st.session_state:
                 """
                 with st.spinner("Drafting PRD specification..."):
                     prd_response = client.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model="gemini-3.8-flash",
                         contents=prd_prompt,
                         config=types.GenerateContentConfig(temperature=0.2),
                     )
                 st.markdown(prd_response.text)
             except Exception as e:
                 st.error(f"PRD generation failed: {e}")
-
+                
