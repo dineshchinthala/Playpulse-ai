@@ -165,7 +165,6 @@ if "results" in st.session_state:
     c3.metric("Feature Requests", int((res_df["category"] == "Feature Request").sum()))
 
     st.dataframe(res_df, width="stretch")
-
         st.divider()
     st.subheader("3. Autonomous PRD Micro-Spec")
     if st.button("Generate Feature PRD from Top Backlog"):
@@ -209,3 +208,4 @@ if "results" in st.session_state:
                 st.markdown(prd_text)
             else:
                 st.error(f"PRD generation temporarily busy: {last_err}")
+
