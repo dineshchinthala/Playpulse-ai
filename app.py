@@ -166,36 +166,46 @@ if "results" in st.session_state:
 
     st.dataframe(res_df, width="stretch")
 
-    st.divider()
+        st.divider()
     st.subheader("3. Autonomous PRD Micro-Spec")
     if st.button("Generate Feature PRD from Top Backlog"):
         if not api_key:
             st.error("Please provide a Gemini API Key first.")
         else:
-            try:
-                client = genai.Client(api_key=api_key)
-                priority_sample = res_df[res_df["severity"].isin(["P0", "P1"])].head(25)
-                if priority_sample.empty:
-                    priority_sample = res_df.head(25)
+            client = genai.Client(api_key=api_key)
+            priority_sample = res_df[res_df["severity"].isin(["P0", "P1"])].head(25)
+            if priority_sample.empty:
+                priority_sample = res_df.head(25)
 
-                prd_prompt = f"""
-                Act as a Senior Product Manager. Based on these triaged app reviews (out of {len(res_df)} total audited):
-                {priority_sample.to_dict(orient='records')}
+            prd_prompt = f"""
+            Act as a Senior Product Manager. Based on these triaged app reviews (out of {len(res_df)} total audited):
+            {priority_sample.to_dict(orient='records')}
 
-                Write a concise 1-page Product Requirement Document (PRD) addressing the highest-priority user pain point.
-                Include:
-                1. Problem Statement
-                2. Target User Story
-                3. Functional Acceptance Criteria
-                4. North Star & Guardrail Metrics
-                """
-                with st.spinner("Drafting PRD specification..."):
-                    prd_response = client.models.generate_content(
-                        model="gemini-3.8-flash",
-                        contents=prd_prompt,
-                        config=types.GenerateContentConfig(temperature=0.2),
-                    )
-                st.markdown(prd_response.text)
-            except Exception as e:
-                st.error(f"PRD generation failed: {e}")
-                
+            Write a concise 1-page Product Requirement Document (PRD) addressing the highest-priority user pain point.
+            Include:
+            1. Problem Statement
+            2. Target User Story
+            3. Functional Acceptance Criteria
+            4. North Star & Guardrail Metrics
+            """
+
+            prd_text = None
+            last_err = None
+            with st.spinner("Drafting PRD specification..."):
+                for candidate_model in ["gemini-3.8-flash", "gemini-3.5-flash-lite"]:
+                    try:
+                        prd_response = client.models.generate_content(
+                            model=candidate_model,
+                            contents=prd_prompt,
+                            config=types.GenerateContentConfig(temperature=0.2),
+                        )
+                        prd_text = prd_response.text
+                        break
+                    except Exception as e:
+                        last_err = e
+                        time.sleep(2)
+
+            if prd_text:
+                st.markdown(prd_text)
+            else:
+                st.error(f"PRD generation temporarily busy: {last_err}")
